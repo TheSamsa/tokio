@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/tokio-macros/0.2.0-alpha.6")]
+#![doc(html_root_url = "https://docs.rs/tokio-macros/0.2.0")]
 #![warn(
     missing_debug_implementations,
     missing_docs,
@@ -18,9 +18,9 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 
-enum RuntimeType {
-    Single,
-    Multi,
+enum Runtime {
+    Basic,
+    Threaded,
     Auto,
 }
 
@@ -28,8 +28,8 @@ enum RuntimeType {
 ///
 /// ## Options:
 ///
-/// - `current_thread` - Uses the `current_thread` runtime.
-/// - `threadpool` - Uses the multi-threaded `threadpool` runtime. Used by default.
+/// - `basic_scheduler` - All tasks are executed on the current thread.
+/// - `threaded_scheduler` - Uses the multi-threaded scheduler. Used by default.
 ///
 /// ## Function arguments:
 ///
@@ -37,18 +37,19 @@ enum RuntimeType {
 ///
 /// ## Usage
 ///
-/// ### Select runtime
-///
-/// ```rust
-/// #[tokio::main(current_thread)]
-/// async fn main() {
-///     println!("Hello world");
-/// }
-/// ```
 /// ### Using default
 ///
 /// ```rust
 /// #[tokio::main]
+/// async fn main() {
+///     println!("Hello world");
+/// }
+/// ```
+///
+/// ### Select runtime
+///
+/// ```rust
+/// #[tokio::main(basic_scheduler)]
 /// async fn main() {
 ///     println!("Hello world");
 /// }
@@ -77,7 +78,7 @@ pub fn main(args: TokenStream, item: TokenStream) -> TokenStream {
             .into();
     }
 
-    let mut runtime = RuntimeType::Auto;
+    let mut runtime = Runtime::Auto;
 
     for arg in args {
         if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = arg {
@@ -87,10 +88,10 @@ pub fn main(args: TokenStream, item: TokenStream) -> TokenStream {
                 return syn::Error::new_spanned(path, msg).to_compile_error().into();
             }
             match ident.unwrap().to_string().to_lowercase().as_str() {
-                "threadpool" => runtime = RuntimeType::Multi,
-                "current_thread" => runtime = RuntimeType::Single,
+                "threaded_scheduler" => runtime = Runtime::Threaded,
+                "basic_scheduler" => runtime = Runtime::Basic,
                 name => {
-                    let msg = format!("Unknown attribute {} is specified; expected `current_thread` or `threadpool`", name);
+                    let msg = format!("Unknown attribute {} is specified; expected `basic_scheduler` or `threaded_scheduler`", name);
                     return syn::Error::new_spanned(path, msg).to_compile_error().into();
                 }
             }
@@ -98,23 +99,21 @@ pub fn main(args: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let result = match runtime {
-        RuntimeType::Multi => quote! {
+        Runtime::Threaded | Runtime::Auto => quote! {
             #(#attrs)*
             fn #name(#inputs) #ret {
                 tokio::runtime::Runtime::new().unwrap().block_on(async { #body })
             }
         },
-        RuntimeType::Single => quote! {
+        Runtime::Basic => quote! {
             #(#attrs)*
             fn #name(#inputs) #ret {
-                tokio::runtime::current_thread::Runtime::new().unwrap().block_on(async { #body })
-            }
-        },
-        RuntimeType::Auto => quote! {
-            #(#attrs)*
-            fn #name() #ret {
-                let mut rt = tokio::runtime::__main::Runtime::new().unwrap();
-                rt.block_on(async { #body })
+                tokio::runtime::Builder::new()
+                    .basic_scheduler()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async { #body })
             }
         },
     };
@@ -126,15 +125,15 @@ pub fn main(args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ## Options:
 ///
-/// - `current_thread` - Uses the `current_thread` runtime. Used by default.
-/// - `threadpool` - Uses multi-threaded runtime.
+/// - `basic_scheduler` - All tasks are executed on the current thread. Used by default.
+/// - `threaded_scheduler` - Use multi-threaded scheduler.
 ///
 /// ## Usage
 ///
 /// ### Select runtime
 ///
 /// ```no_run
-/// #[tokio::test(threadpool)]
+/// #[tokio::test(threaded_scheduler)]
 /// async fn my_test() {
 ///     assert!(true);
 /// }
@@ -179,7 +178,7 @@ pub fn test(args: TokenStream, item: TokenStream) -> TokenStream {
             .into();
     }
 
-    let mut runtime = RuntimeType::Auto;
+    let mut runtime = Runtime::Auto;
 
     for arg in args {
         if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = arg {
@@ -189,10 +188,10 @@ pub fn test(args: TokenStream, item: TokenStream) -> TokenStream {
                 return syn::Error::new_spanned(path, msg).to_compile_error().into();
             }
             match ident.unwrap().to_string().to_lowercase().as_str() {
-                "threadpool" => runtime = RuntimeType::Multi,
-                "current_thread" => runtime = RuntimeType::Single,
+                "threaded_scheduler" => runtime = Runtime::Threaded,
+                "basic_scheduler" => runtime = Runtime::Basic,
                 name => {
-                    let msg = format!("Unknown attribute {} is specified; expected `current_thread` or `threadpool`", name);
+                    let msg = format!("Unknown attribute {} is specified; expected `basic_scheduler` or `threaded_scheduler`", name);
                     return syn::Error::new_spanned(path, msg).to_compile_error().into();
                 }
             }
@@ -200,18 +199,23 @@ pub fn test(args: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let result = match runtime {
-        RuntimeType::Multi => quote! {
+        Runtime::Threaded => quote! {
             #[test]
             #(#attrs)*
             fn #name() #ret {
                 tokio::runtime::Runtime::new().unwrap().block_on(async { #body })
             }
         },
-        RuntimeType::Single | RuntimeType::Auto => quote! {
+        Runtime::Basic | Runtime::Auto => quote! {
             #[test]
             #(#attrs)*
             fn #name() #ret {
-                tokio::runtime::current_thread::Runtime::new().unwrap().block_on(async { #body })
+                tokio::runtime::Builder::new()
+                    .basic_scheduler()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async { #body })
             }
         },
     };
